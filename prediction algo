@@ -1,0 +1,205 @@
+import tkinter as tk
+from tkinter import messagebox
+import math
+import numpy as np
+from sklearn.linear_model import LinearRegression
+import pandas as pd
+import sqlite3
+import torch
+import torch.nn as nn
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+import threading
+
+# Create connection to the SQLite database.
+conn = sqlite3.connect('countdown_records.db')
+c = conn.cursor()
+
+# Create countdown records table if it doesn't exist in the database.
+c.execute('''CREATE TABLE IF NOT EXISTS countdown (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                countdown REAL,
+                prediction REAL,
+                accuracy FLOAT
+            )''')
+
+# Function to predict the outcome using scikit-learn
+def predict_outcome_sklearn(countdown):
+    X = np.array([1, 2, 3, 4, 5]).reshape(-1, 1)
+    y = np.array([2, 4, 6, 8, 10])
+    model = LinearRegression()
+    model.fit(X, y)
+    prediction = model.predict([[countdown]])
+    return prediction[0]
+
+# Function to predict the outcome using math function
+def predict_outcome_math(countdown):
+    prediction = math.ceil(countdown / 2)
+    return prediction
+
+# Function to predict the outcome using numpy
+def predict_outcome_numpy(countdown):
+    prediction = np.mean([countdown, countdown * 2])
+    return prediction
+
+# Function to predict the outcome using PyTorch
+def predict_outcome_pytorch(countdown):
+    input_size = 1
+    hidden_size = 16
+    output_size = 1
+    model = nn.Sequential(
+        nn.Linear(input_size, hidden_size),
+        nn.ReLU(),
+        nn.Linear(hidden_size, output_size)
+    )
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+    X_train = torch.Tensor([[1], [2], [3], [4], [5]])
+    y_train = torch.Tensor([[2], [4], [6], [8], [10]])
+
+    for epoch in range(1000):
+        optimizer.zero_grad()
+        output = model(X_train)
+        loss = criterion(output, y_train)
+        loss.backward()
+        optimizer.step()
+
+    prediction = model(torch.Tensor([[countdown]])).item()
+    return prediction
+
+# Function to predict the outcome using Transformers
+def predict_outcome_transformers(countdown):
+    tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+    model = AutoModelForSequenceClassification.from_pretrained("bert-base-uncased")
+
+    inputs = tokenizer.encode_plus(
+        "Predict the outcome of the countdown: {}".format(countdown),
+        None,
+        add_special_tokens=True,
+        padding="longest",
+        return_tensors="pt"
+    )
+
+    logits = model(**inputs).logits
+    prediction = torch.argmax(logits, dim=1).item()
+    return prediction
+
+# Function to update the accuracy for a given prediction method
+def update_accuracy(countdown, prediction):
+    accuracy = (countdown - prediction) / countdown * 100
+    return accuracy
+
+# Function to update the prediction labels
+def update_prediction_label(c):
+    c.execute('SELECT countdown, prediction, accuracy FROM countdown ORDER BY id DESC LIMIT 1')
+    record = c.fetchone()
+
+    countdown, prediction, accuracy = record
+
+    # Update the prediction label
+    if prediction is not None:
+        prediction_label_list[0].config(text="Prediction: {:.2f}".format(prediction), anchor="w")
+    else:
+        prediction_label_list[0].config(text="Prediction: ", anchor="w")
+
+    # Update the accuracy label
+    if accuracy is not None:
+        accuracy_label_list[0].config(text="Accuracy: {:.2f}".format(accuracy), anchor="w")
+    else:
+        accuracy_label_list[0].config(text="Accuracy: ", anchor="w")
+
+# Function to clear the entry box
+def clear_entry_box():
+    countdown_entry.delete(0, tk.END)
+
+# Function to save the countdown to the database
+def save_countdown():
+    countdown = countdown_entry.get()
+    try:
+        countdown = float(countdown)
+    except ValueError:
+        # Show an error message if the countdown is not a valid number
+        messagebox.showerror("Error", "Invalid countdown value.")
+        return
+
+    # Calculate the prediction using the selected method
+    prediction_sklearn = predict_outcome_sklearn(countdown)
+    prediction_math = predict_outcome_math(countdown)
+    prediction_numpy = predict_outcome_numpy(countdown)
+    prediction_pytorch = predict_outcome_pytorch(countdown)
+    prediction_transformers = predict_outcome_transformers(countdown)
+
+    # Calculate the accuracy for each prediction method
+    accuracy_sklearn = update_accuracy(countdown, prediction_sklearn)
+    accuracy_math = update_accuracy(countdown, prediction_math)
+    accuracy_numpy = update_accuracy(countdown, prediction_numpy)
+    accuracy_pytorch = update_accuracy(countdown, prediction_pytorch)
+    accuracy_transformers = update_accuracy(countdown, prediction_transformers)
+
+    # Insert the countdown and prediction into the database
+    c.execute('INSERT INTO countdown (countdown, prediction, accuracy) VALUES (?, ?, ?)',
+              (countdown, prediction_sklearn, accuracy_sklearn))
+    conn.commit()
+
+    # Compare the prediction accuracies
+    accuracies = {
+        "scikit-learn": accuracy_sklearn,
+        "math": accuracy_math,
+        "numpy": accuracy_numpy,
+        "pytorch": accuracy_pytorch,
+        "transformers": accuracy_transformers
+    }
+    best_prediction = max(accuracies, key=accuracies.get)
+    best_accuracy = accuracies[best_prediction]
+
+    # Update the prediction labels
+    update_prediction_label(c)
+
+    # Clear the entry box
+    clear_entry_box()
+
+    # Show a success message
+    messagebox.showinfo("Success", "Countdown saved successfully.")
+
+# Function to handle the Enter key press event
+def handle_enter(event):
+    save_countdown()
+
+# Create the main window
+window = tk.Tk()
+window.title("Countdown Prediction")
+window.geometry("300x250")
+
+# Create the countdown entry field
+countdown_label = tk.Label(window, text="Countdown:")
+countdown_label.pack()
+countdown_entry = tk.Entry(window)
+countdown_entry.pack()
+
+# Bind Enter key press event to handle_enter function
+countdown_entry.bind("<Return>", handle_enter)
+
+# Create the save button
+save_button = tk.Button(window, text="Save", command=save_countdown)
+save_button.pack()
+
+# Create the prediction labels
+prediction_label_list = []
+prediction_label = tk.Label(window, text="Prediction: ", anchor="w")
+prediction_label.pack()
+prediction_label_list.append(prediction_label)
+
+# Create the accuracy labels
+accuracy_label_list = []
+accuracy_label = tk.Label(window, text="Accuracy: ", anchor="w")
+accuracy_label.pack()
+accuracy_label_list.append(accuracy_label)
+
+# Initialize the prediction labels
+update_prediction_label(c)
+
+# Start the main loop
+window.mainloop()
+
+# Close the database connection
+conn.close()
